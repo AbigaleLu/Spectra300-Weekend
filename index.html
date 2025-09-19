@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>2025 周末排班 (至12月)</title>
+  <style>
+    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:#f9f9f9;color:#1c1c1e;margin:0;padding:2em;display:flex;flex-direction:column;align-items:center;gap:1em;}
+    .controls{display:flex;gap:1em;justify-content:center;align-items:center;flex-wrap:wrap;}
+    .month-container{background:#fff;border-radius:24px;box-shadow:0 4px 12px rgba(0,0,0,.08);padding:1em;width:320px;}
+    h1{color:rgba(153,0,0,.5);font-size:1.5em;margin:.5em 0 1em;text-align:center;}
+    .calendar{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;}
+    .day,.header{width:100%;aspect-ratio:1/1;display:flex;align-items:center;justify-content:center;border-radius:50%;transition:background .3s ease;}
+    .header{font-weight:500;color:#1c1c1e;font-size:.9em;background:none;}
+    .day{background-color:#fff;font-size:.85em;color:#8e8e93;position:relative;}
+    .day.weekend{color:rgba(153,0,0,.5);}
+    .day.assignment{background-color:#e8e8ee;font-weight:bold;color:#c97c7c;}
+    .day.holiday-workday{background-color:#e0e0e0;font-weight:bold;color:#636366;}
+    .day.holiday{background-color:#d4d4d4;color:#a0a0a0;font-weight:normal;}
+    .day:hover{background-color:#636366;color:#fff;cursor:pointer;}
+    .blank{background:none;}
+    button,select{padding:.4em .8em;font-size:1em;border:none;border-radius:12px;background-color:#e0e0e0;cursor:pointer;transition:background-color .3s;}
+    button:hover,select:hover{background-color:#d0d0d0;}
+  </style>
+</head>
+<body>
+  <div class="controls">
+    <button onclick="changeMonth(-1)">←</button>
+    <h1 id="month-title">2025年9月</h1>
+    <button onclick="changeMonth(1)">→</button>
+    <select id="personFilter" onchange="renderCalendar(currentDate)">
+      <option value="">查看所有人</option>
+      <option value="曾">曾</option><option value="刘">刘</option><option value="韩">韩</option>
+      <option value="杨">杨</option><option value="张">张</option><option value="胡">胡</option><option value="李">李</option>
+    </select>
+  </div>
+  <div class="month-container">
+    <div class="calendar" id="calendar"></div>
+  </div>
+
+<script>
+/* ================== 1) 原始排班表（基础数据） ================== */
+const BASE_ASSIGNMENTS = {
+  "2025-09-13":"刘","2025-09-14":"曾","2025-09-20":"韩","2025-09-21":"杨",
+  "2025-09-27":"张","2025-09-28":"班",
+  "2025-10-01":"休","2025-10-02":"休","2025-10-03":"休","2025-10-04":"休","2025-10-05":"休","2025-10-06":"休","2025-10-07":"休","2025-10-08":"休",
+  "2025-10-11":"班","2025-10-12":"胡","2025-10-18":"李","2025-10-19":"曾","2025-10-25":"刘","2025-10-26":"曾",
+  "2025-11-01":"韩","2025-11-02":"杨","2025-11-08":"张","2025-11-09":"胡","2025-11-15":"李","2025-11-16":"曾","2025-11-22":"刘","2025-11-23":"曾","2025-11-29":"韩","2025-11-30":"杨",
+  "2025-12-06":"张","2025-12-07":"胡","2025-12-13":"李","2025-12-14":"曾","2025-12-20":"刘","2025-12-21":"曾","2025-12-27":"韩","2025-12-28":"杨"
+};
+
+/* ================== 2) 顺延策略配置 ================== */
+// 取消的具体日期（这些会被清空，并触发后续顺延）
+const SKIP_DATES = new Set(["2025-09-20","2025-09-21"]);
+// 是否允许用“人员排班”覆盖原有“班”
+const ALLOW_OVERWRITE_BAN = true;
+// 是否跳过“休”（不在“休”上排班）
+const SKIP_XIU = true;
+// 顺延起点（含当天）。通常等于最早被取消的日期。
+const SHIFT_START = "2025-09-20";
+// 顺延终点（含当天）
+const SHIFT_END   = "2025-12-31";
+
+/* ================== 3) 日期辅助 ================== */
+const fmt = (d)=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+const parse = (s)=>{ const [y,m,d]=s.split('-').map(Number); return new Date(y,m-1,d); };
+const isWeekend = (d)=>[6,0].includes(d.getDay()); // 周六=6，周日=0
+const inRange = (s, a, b)=>parse(s) >= parse(a) && parse(s) <= parse(b);
+
+/* ================== 4) 生成“顺延后”的排班 ================== */
+function buildShiftedAssignments() {
+  // 1) 从基础表复制一份
+  const out = {...BASE_ASSIGNMENTS};
+
+  // 2) 把起点及之后（到终点）的“人员类”记录收集为队列（不含“休”“班”）
+  const peopleQueue = [];
+  const keys = Object.keys(BASE_ASSIGNMENTS).filter(k=>inRange(k, SHIFT_START, SHIFT_END)).sort();
+  for (const day of keys) {
+    const v = BASE_ASSIGNMENTS[day];
+    if (v && v !== "休" && v !== "班") {
+      peopleQueue.push(v);
+      // 先清空，稍后按顺延策略重新放置
+      delete out[day];
+    }
+  }
+
+  // 3) 清空被取消日期
+  for (const s of SKIP_DATES) delete out[s];
+
+  // 4) 依次扫描起点到终点的“周末”日期，将 peopleQueue 依序填入：
+  //    - 若当天是“休”且 SKIP_XIU=true：跳过
+  //    - 若当天是“班”且 ALLOW_OVERWRITE_BAN=true：允许覆盖
+  //    - 其它情况：若已有人（极少数手工固定），也覆盖以保证顺延的连贯性
+  let cur = parse(SHIFT_START);
+  const end = parse(SHIFT_END);
+
+  while (cur <= end && peopleQueue.length) {
+    if (isWeekend(cur)) {
+      const dStr = fmt(cur);
+      const original = BASE_ASSIGNMENTS[dStr];
+
+      const isXiu = original === "休";
+      const isBan = original === "班";
+
+      if (SKIP_DATES.has(dStr)) {
+        // 取消日永远跳过
+      } else if (isXiu && SKIP_XIU) {
+        // 保留“休”
+      } else {
+        // 可填充（允许覆盖“班”，也覆盖已有人员，保证顺延）
+        const nextPerson = peopleQueue.shift();
+        out[dStr] = nextPerson;
+      }
+    }
+    cur.setDate(cur.getDate()+1);
+  }
+
+  return out;
+}
+
+const assignments = buildShiftedAssignments();
+
+/* ================== 5) 下面是渲染逻辑（与你原来一致，仅细修筛选显示） ================== */
+const WEEKDAYS = ["一","二","三","四","五","六","日"];
+const monthTitle = document.getElementById("month-title");
+const calendarEl = document.getElementById("calendar");
+const filterSelect = document.getElementById("personFilter");
+let currentDate = new Date(2025,8,1);
+
+function renderCalendar(date){
+  const year=date.getFullYear();
+  const month=date.getMonth();
+  const firstDay=new Date(year,month,1);
+  const firstDayWeekday=(firstDay.getDay()+6)%7; // 周一=0
+  const daysInMonth=new Date(year,month+1,0).getDate();
+  const selected=filterSelect.value;
+
+  monthTitle.textContent=`${year}年${month+1}月`;
+  let html=WEEKDAYS.map(d=>`<div class='header'>${d}</div>`).join("");
+  html+="<div class='blank'></div>".repeat(firstDayWeekday);
+
+  for(let day=1;day<=daysInMonth;day++){
+    const dateStr=`${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+    const weekdayIdx=(firstDayWeekday+day-1)%7;
+    const weekend = weekdayIdx>=5;
+
+    const val=assignments[dateStr]; // 可能为 人名 / "班" / "休" / undefined
+    const classes=["day"];
+    if(weekend) classes.push("weekend");
+    if(val==="休") classes.push("holiday");
+    else if(val==="班") classes.push("holiday-workday");
+    else if(val) classes.push("assignment");
+
+    // 筛选规则：选择了某人时，仅显示该人的标记；其他格子留空（但格子仍占位，保持日历稳定）
+    const visibleText = !selected ? (val ?? day) : (val===selected ? selected : "");
+
+    html+=`<div class="${classes.join(' ')}">${visibleText}</div>`;
+  }
+  calendarEl.innerHTML=html;
+}
+
+function changeMonth(offset){
+  currentDate.setMonth(currentDate.getMonth()+offset);
+  renderCalendar(currentDate);
+}
+
+renderCalendar(currentDate);
+</script>
+</body>
+</html>
