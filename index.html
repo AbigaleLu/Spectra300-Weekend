@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <title>2025 周末排班 (至12月)</title>
+  <title>2025·Spectra300周末排班·V2</title>
   <style>
     body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:#f9f9f9;color:#1c1c1e;margin:0;padding:2em;display:flex;flex-direction:column;align-items:center;gap:1em;}
     .controls{display:flex;gap:1em;justify-content:center;align-items:center;flex-wrap:wrap;}
@@ -52,7 +52,7 @@ const BASE_ASSIGNMENTS = {
 // 取消的具体日期（这些会被清空，并触发后续顺延）
 const SKIP_DATES = new Set(["2025-09-20","2025-09-21"]);
 // 是否允许用“人员排班”覆盖原有“班”
-const ALLOW_OVERWRITE_BAN = true;
+const ALLOW_OVERWRITE_BAN = false;
 // 是否跳过“休”（不在“休”上排班）
 const SKIP_XIU = true;
 // 顺延起点（含当天）。通常等于最早被取消的日期。
@@ -86,33 +86,35 @@ function buildShiftedAssignments() {
   // 3) 清空被取消日期
   for (const s of SKIP_DATES) delete out[s];
 
-  // 4) 依次扫描起点到终点的“周末”日期，将 peopleQueue 依序填入：
-  //    - 若当天是“休”且 SKIP_XIU=true：跳过
-  //    - 若当天是“班”且 ALLOW_OVERWRITE_BAN=true：允许覆盖
-  //    - 其它情况：若已有人（极少数手工固定），也覆盖以保证顺延的连贯性
-  let cur = parse(SHIFT_START);
-  const end = parse(SHIFT_END);
+// 4) 顺延回填（修复：尊重 ALLOW_OVERWRITE_BAN）
+let cur = parse(SHIFT_START);
+const end = parse(SHIFT_END);
 
-  while (cur <= end && peopleQueue.length) {
-    if (isWeekend(cur)) {
-      const dStr = fmt(cur);
-      const original = BASE_ASSIGNMENTS[dStr];
+while (cur <= end && peopleQueue.length) {
+  if (isWeekend(cur)) {
+    const dStr = fmt(cur);
 
-      const isXiu = original === "休";
-      const isBan = original === "班";
+    // 基表与当前输出上该日的原始标记
+    const baseVal = BASE_ASSIGNMENTS[dStr];
+    const outVal  = (dStr in out) ? out[dStr] : undefined;
 
-      if (SKIP_DATES.has(dStr)) {
-        // 取消日永远跳过
-      } else if (isXiu && SKIP_XIU) {
-        // 保留“休”
-      } else {
-        // 可填充（允许覆盖“班”，也覆盖已有人员，保证顺延）
-        const nextPerson = peopleQueue.shift();
-        out[dStr] = nextPerson;
-      }
+    const isXiu = (baseVal === "休") || (outVal === "休");
+    const isBan = (baseVal === "班") || (outVal === "班");
+
+    // 取消日 or 休（且要求跳过）or 班（且不允许覆盖） -> 跳过，不弹出队列
+    const shouldSkip =
+      SKIP_DATES.has(dStr) ||
+      (SKIP_XIU && isXiu) ||
+      (!ALLOW_OVERWRITE_BAN && isBan);
+
+    if (!shouldSkip) {
+      // 可以填入；为保证顺延连贯性，覆盖已有人员（“休/班”已在上面排除）
+      out[dStr] = peopleQueue.shift();
     }
-    cur.setDate(cur.getDate()+1);
   }
+  cur.setDate(cur.getDate() + 1);
+}
+
 
   return out;
 }
